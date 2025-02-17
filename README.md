@@ -277,7 +277,9 @@ Contributions are welcome! Please:
 - Inspired by RStudio's intuitive interface and workflow
 - Built on the excellent Neovim ecosystem
 - Thanks to the Julia community for LanguageServer.jl
+- Thanks to claude.ai for helping writing README.md
+- Thanks to DeepSeek to help in coding
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+Open source and all can use
