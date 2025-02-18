@@ -5,6 +5,20 @@ local workspace_win = nil
 local workspace_buf = nil
 local workspace_visible = false
 local julia = nil -- Julia terminal instance
+local current_workspace_path = nil -- Track the current workspace.json path
+
+-- Helper function to get current file directory
+local function get_current_file_directory()
+    local current_file = vim.fn.expand('%:p')
+    if current_file == '' then
+        return vim.fn.getcwd()
+    else
+        return vim.fn.fnamemodify(current_file, ':h')
+    end
+end
+
+-- Initialize current_workspace_path on startup
+current_workspace_path = get_current_file_directory()
 
 -- Configure Julia REPL with horizontal orientation
 local function create_julia_terminal()
@@ -18,11 +32,15 @@ local function create_julia_terminal()
             vim.api.nvim_win_set_option(term.window, 'number', false)
             vim.api.nvim_win_set_option(term.window, 'relativenumber', false)
 
-            -- Initialize workspace function
+            -- Set workspace directory to the current file's directory immediately
+            local initial_dir = current_workspace_path:gsub([[\]], [[\\]])
+            
+            -- Initialize workspace function with dynamic path
             term:send([[
                 Base.include_string(Main, raw"""
-                function export_workspace()
-                    open("workspace.json", "w") do f
+                function export_workspace(directory="")
+                    file_path = directory == "" ? "workspace.json" : joinpath(directory, "workspace.json")
+                    open(file_path, "w") do f
                         excluded_names = Set(["eval", "export_workspace", "minimal_print", "include"])
                         for n in names(Main; all=true)
                             if !startswith(string(n), "#") && 
@@ -59,9 +77,11 @@ end
 -- Initialize Julia terminal instance
 julia = create_julia_terminal()
 
-
 -- Workspace management
 function toggle_workspace()
+    -- Always update current_workspace_path before toggling
+    current_workspace_path = get_current_file_directory()
+    
     if not workspace_visible then
         vim.cmd("vsplit | enew")
         workspace_win = vim.api.nvim_get_current_win()
@@ -84,8 +104,13 @@ function toggle_workspace()
 end
 
 function setup_file_watcher()
+    if not current_workspace_path then
+        current_workspace_path = get_current_file_directory()
+    end
+    
     local watcher = vim.loop.new_fs_event()
-    watcher:start("workspace.json", {}, function(err)
+    local json_path = current_workspace_path .. "/workspace.json"
+    watcher:start(json_path, {}, function(err)
         if not err then
             vim.schedule(function()
                 update_workspace()
@@ -97,8 +122,14 @@ end
 function update_workspace()
     if not workspace_buf or not vim.api.nvim_buf_is_valid(workspace_buf) then return end
     
+    -- Make sure we have the latest path
+    if not current_workspace_path then
+        current_workspace_path = get_current_file_directory()
+    end
+    
+    local json_path = current_workspace_path .. "/workspace.json"
     local ok, data = pcall(function()
-        return vim.fn.readfile("workspace.json")
+        return vim.fn.readfile(json_path)
     end)
     
     if ok then
@@ -129,77 +160,31 @@ function update_workspace()
     end
 end
 
--- Modified Julia code execution function
+-- Julia code execution function
 local function send_to_julia(code)
     if not julia:is_open() then
         julia:open()
     end
+    -- Update current workspace path based on current file
+    current_workspace_path = get_current_file_directory()
     julia:send([[println("\027[2J")]])  -- Clear terminal
     julia:send(code)
-    -- Modified line to clear the export_workspace() command line
-    julia:send([[export_workspace(); print("\x1b[1A\x1b[K")]])
+    -- Modified line to export workspace to the file's directory
+    local export_cmd = string.format([[export_workspace("%s"); print("\x1b[1A\x1b[K")]], 
+                                     current_workspace_path:gsub([[\]], [[\\]]))
+    julia:send(export_cmd)
     vim.defer_fn(update_workspace, 100)
 end
 
--- Remove the export_workspace.jl creation from setup_julia_environment
+-- Julia environment setup - expanded to set workspace path
 function setup_julia_environment()
+    -- Update the workspace path when setting up environment
+    current_workspace_path = get_current_file_directory()
+    
     if not julia:is_open() then
         julia:open()
         vim.cmd('wincmd k')
     end
-
-    -- Key mappings remain the same...
-end
-local function get_cell_content()
-    local current_line = vim.api.nvim_win_get_cursor(0)[1]
-    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-    
-    if lines[current_line] and lines[current_line]:match("^#%%") then
-        current_line = current_line + 1
-    end
-    
-    local start_line = current_line
-    local end_line = current_line
-    
-    while start_line > 1 and not lines[start_line-1]:match("^#%%") do
-        start_line = start_line - 1
-    end
-    
-    while end_line < #lines and not lines[end_line+1]:match("^#%%") do
-        end_line = end_line + 1
-    end
-    
-    return table.concat(vim.api.nvim_buf_get_lines(0, start_line-1, end_line, false), "\n")
-end
-
--- Julia environment setup
-function setup_julia_environment()
-    if not julia:is_open() then
-        julia:open()
-        vim.cmd('wincmd k')
-    end
-
-    -- Create export script
-    local export_script = [[
-        function export_workspace()
-            open("workspace.json", "w") do f
-                for n in names(Main; all=true)
-                    if !startswith(string(n), "#") && isdefined(Main, n)
-                        try
-                            val = getfield(Main, n)
-                            if !isa(val, Module)
-                                println(f, "$n: $(typeof(val))")
-                            end
-                        catch
-                            continue
-                        end
-                    end
-                end
-            end
-        end
-    ]]
-    
-    vim.fn.writefile(vim.split(export_script, "\n"), "export_workspace.jl")
 
     -- Key mappings
     vim.keymap.set("n", "<F5>", function()
@@ -220,6 +205,36 @@ function setup_julia_environment()
         local lines = vim.api.nvim_buf_get_lines(0, start_pos[2]-1, end_pos[2], false)
         send_to_julia(table.concat(lines, "\n"))
     end, { buffer = true })
+end
+
+-- Add an autocmd to update workspace path on file change
+vim.api.nvim_create_autocmd({"BufEnter", "BufNew"}, {
+    pattern = {"*.jl"},
+    callback = function()
+        current_workspace_path = get_current_file_directory()
+    end
+})
+
+local function get_cell_content()
+    local current_line = vim.api.nvim_win_get_cursor(0)[1]
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    
+    if lines[current_line] and lines[current_line]:match("^#%%") then
+        current_line = current_line + 1
+    end
+    
+    local start_line = current_line
+    local end_line = current_line
+    
+    while start_line > 1 and not lines[start_line-1]:match("^#%%") do
+        start_line = start_line - 1
+    end
+    
+    while end_line < #lines and not lines[end_line+1]:match("^#%%") do
+        end_line = end_line + 1
+    end
+    
+    return table.concat(vim.api.nvim_buf_get_lines(0, start_line-1, end_line, false), "\n")
 end
 
 -- Plugin configurations
