@@ -162,6 +162,18 @@ end
 
 -- Julia code execution function
 local function send_to_julia(code)
+    -- Filter out empty/whitespace-only lines
+    local lines = vim.split(code, "\n")
+    local filtered = {}
+    for _, line in ipairs(lines) do
+        -- Remove whitespace and check if non-empty
+        if line:gsub("%s", "") ~= "" then
+            table.insert(filtered, line)
+        end
+    end
+    code = table.concat(filtered, "\n")
+    if code == "" then return end  -- Don't send empty content
+
     if not julia:is_open() then
         julia:open()
     end
@@ -174,6 +186,30 @@ local function send_to_julia(code)
                                      current_workspace_path:gsub([[\]], [[\\]]))
     julia:send(export_cmd)
     vim.defer_fn(update_workspace, 100)
+end
+
+
+
+local function get_cell_content()
+    local current_line = vim.api.nvim_win_get_cursor(0)[1]
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    
+    if lines[current_line] and lines[current_line]:match("^#%%") then
+        current_line = current_line + 1
+    end
+    
+    local start_line = current_line
+    local end_line = current_line
+    
+    while start_line > 1 and not lines[start_line-1]:match("^#%%") do
+        start_line = start_line - 1
+    end
+    
+    while end_line < #lines and not lines[end_line+1]:match("^#%%") do
+        end_line = end_line + 1
+    end
+    
+    return table.concat(vim.api.nvim_buf_get_lines(0, start_line-1, end_line, false), "\n")
 end
 
 -- Julia environment setup - expanded to set workspace path
@@ -215,27 +251,7 @@ vim.api.nvim_create_autocmd({"BufEnter", "BufNew"}, {
     end
 })
 
-local function get_cell_content()
-    local current_line = vim.api.nvim_win_get_cursor(0)[1]
-    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-    
-    if lines[current_line] and lines[current_line]:match("^#%%") then
-        current_line = current_line + 1
-    end
-    
-    local start_line = current_line
-    local end_line = current_line
-    
-    while start_line > 1 and not lines[start_line-1]:match("^#%%") do
-        start_line = start_line - 1
-    end
-    
-    while end_line < #lines and not lines[end_line+1]:match("^#%%") do
-        end_line = end_line + 1
-    end
-    
-    return table.concat(vim.api.nvim_buf_get_lines(0, start_line-1, end_line, false), "\n")
-end
+
 
 -- Plugin configurations
 require('nvim-tree').setup()
