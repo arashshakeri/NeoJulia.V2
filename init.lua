@@ -212,6 +212,159 @@ local function get_cell_content()
     return table.concat(vim.api.nvim_buf_get_lines(0, start_line-1, end_line, false), "\n")
 end
 
+-- Function to get complete multiline statement
+local function get_complete_statement()
+    local current_line = vim.api.nvim_win_get_cursor(0)[1]
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    local current_text = lines[current_line]
+    
+    -- Check if we're on a line that might start a multiline block
+    local block_starters = {
+        "^%s*function%s+",           -- function definition
+        "^%s*if%s+",                 -- if statement
+        "^%s*for%s+",                -- for loop
+        "^%s*while%s+",              -- while loop
+        "^%s*try%s*$",               -- try block
+        "^%s*begin%s*$",             -- begin block
+        "^%s*let%s+",                -- let block
+        "^%s*do%s+",                 -- do block
+        "^%s*struct%s+",             -- struct definition
+        "^%s*module%s+",             -- module definition
+        "^%s*macro%s+"               -- macro definition
+    }
+    
+    local is_block_start = false
+    for _, pattern in ipairs(block_starters) do
+        if current_text:match(pattern) then
+            is_block_start = true
+            break
+        end
+    end
+    
+    if is_block_start then
+        local start_line = current_line
+        local end_line = current_line
+        local nesting_level = 1
+        
+        -- Find the matching end statement by tracking nesting level
+        while end_line < #lines and nesting_level > 0 do
+            end_line = end_line + 1
+            local line = lines[end_line]
+            
+            -- Check for nested blocks that increase nesting level
+            for _, pattern in ipairs(block_starters) do
+                if line:match(pattern) then
+                    nesting_level = nesting_level + 1
+                    break
+                end
+            end
+            
+            -- Check for end statements that decrease nesting level
+            if line:match("^%s*end%s*$") then
+                nesting_level = nesting_level - 1
+            end
+        end
+        
+        if nesting_level == 0 then
+            return table.concat(vim.api.nvim_buf_get_lines(0, start_line-1, end_line, false), "\n")
+        end
+    end
+    
+    -- Check for balanced parentheses/brackets/braces across multiple lines
+    local function count_brackets(text)
+        local counts = {["("] = 0, [")"] = 0, ["["] = 0, ["]"] = 0, ["{"] = 0, ["}"] = 0}
+        for c in text:gmatch(".") do
+            if counts[c] ~= nil then
+                counts[c] = counts[c] + 1
+            end
+        end
+        return counts
+    end
+    
+    -- Check if parentheses/brackets/braces are unbalanced in current line
+    local brackets = count_brackets(current_text)
+    if brackets["("] > brackets[")"] or 
+       brackets["["] > brackets["]"] or 
+       brackets["{"] > brackets["}"] then
+        
+        local start_line = current_line
+        local end_line = current_line
+        local open_parens = brackets["("] - brackets[")"]
+        local open_brackets = brackets["["] - brackets["]"]
+        local open_braces = brackets["{"] - brackets["}"]
+        
+        while end_line < #lines and (open_parens > 0 or open_brackets > 0 or open_braces > 0) do
+            end_line = end_line + 1
+            local line = lines[end_line]
+            local line_brackets = count_brackets(line)
+            
+            open_parens = open_parens + line_brackets["("] - line_brackets[")"]
+            open_brackets = open_brackets + line_brackets["["] - line_brackets["]"]
+            open_braces = open_braces + line_brackets["{"] - line_brackets["}"]
+        end
+        
+        if open_parens == 0 and open_brackets == 0 and open_braces == 0 then
+            return table.concat(vim.api.nvim_buf_get_lines(0, start_line-1, end_line, false), "\n")
+        end
+    end
+    
+    -- Also check for closing brackets on current line that might need preceding lines
+    if brackets[")"] > brackets["("] or 
+       brackets["]"] > brackets["["] or 
+       brackets["}"] > brackets["{"] then
+        
+        local start_line = current_line
+        local end_line = current_line
+        local excess_close_parens = brackets[")"] - brackets["("]
+        local excess_close_brackets = brackets["]"] - brackets["["]
+        local excess_close_braces = brackets["}"] - brackets["{"]
+        
+        while start_line > 1 and (excess_close_parens > 0 or excess_close_brackets > 0 or excess_close_braces > 0) do
+            start_line = start_line - 1
+            local line = lines[start_line]
+            local line_brackets = count_brackets(line)
+            
+            excess_close_parens = excess_close_parens - (line_brackets["("] - line_brackets[")"])
+            excess_close_brackets = excess_close_brackets - (line_brackets["["] - line_brackets["]"])
+            excess_close_braces = excess_close_braces - (line_brackets["{"] - line_brackets["}"])
+        end
+        
+        if excess_close_parens <= 0 and excess_close_brackets <= 0 and excess_close_braces <= 0 then
+            return table.concat(vim.api.nvim_buf_get_lines(0, start_line-1, end_line, false), "\n")
+        end
+    end
+    
+    -- Check for multi-line assignment with continuation symbols
+    if current_text:match("=%s*[^;]*%s*$") and not current_text:match(";%s*$") then
+        local start_line = current_line
+        local end_line = current_line
+        
+        while end_line < #lines do
+            local next_line = lines[end_line+1]
+            -- Continue if next line doesn't end with semicolon and isn't empty
+            if next_line:match("^%s*[^;]+%s*$") and not next_line:match("^%s*$") then
+                end_line = end_line + 1
+            else
+                break
+            end
+            
+            -- If we encounter an ending semicolon, stop
+            if next_line:match(";%s*$") then
+                break
+            end
+        end
+        
+        if end_line > start_line then
+            return table.concat(vim.api.nvim_buf_get_lines(0, start_line-1, end_line, false), "\n")
+        end
+    end
+    
+    -- If not a multi-line block, return the current line
+    return current_text
+end
+
+
+
 -- Julia environment setup - expanded to set workspace path
 function setup_julia_environment()
     -- Update the workspace path when setting up environment
@@ -228,7 +381,7 @@ function setup_julia_environment()
     end, { buffer = true })
 
     vim.keymap.set("n", "<F6>", function()
-        send_to_julia(vim.api.nvim_get_current_line())
+	 send_to_julia(get_complete_statement())
     end, { buffer = true })
 
     vim.keymap.set("n", "<F7>", function()
